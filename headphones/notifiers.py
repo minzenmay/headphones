@@ -34,6 +34,11 @@ import json
 import oauth2 as oauth
 import pythontwitter as twitter
 
+from email.mime.text import MIMEText
+import smtplib
+import email.utils
+
+
 class GROWL(object):
     """
     Growl notifications, for OS X.
@@ -311,33 +316,31 @@ class Plex(object):
         self.client_hosts = headphones.CONFIG.PLEX_CLIENT_HOST
         self.username = headphones.CONFIG.PLEX_USERNAME
         self.password = headphones.CONFIG.PLEX_PASSWORD
+        self.token = headphones.CONFIG.PLEX_TOKEN
 
     def _sendhttp(self, host, command):
 
-        username = self.username
-        password = self.password
+        url = host + '/xbmcCmds/xbmcHttp/?' + command
 
-        url_command = urllib.urlencode(command)
-
-        url = host + '/xbmcCmds/xbmcHttp/?' + url_command
-
-        req = urllib2.Request(url)
-
-        if password:
-            base64string = base64.encodestring('%s:%s' % (username, password)).replace('\n', '')
-            req.add_header("Authorization", "Basic %s" % base64string)
-
-        logger.info('Plex url: %s' % url)
-
-        try:
-            handle = urllib2.urlopen(req)
-        except Exception as e:
-            logger.warn('Error opening Plex url: %s' % e)
-            return
-
-        response = handle.read().decode(headphones.SYS_ENCODING)
+        if self.password:
+            response = request.request_response(url, auth=(self.username, self.password))
+        else:
+            response = request.request_response(url)
 
         return response
+
+    def _sendjson(self, host, method, params={}):
+        data = [{'id': 0, 'jsonrpc': '2.0', 'method': method, 'params': params}]
+        headers = {'Content-Type': 'application/json'}
+        url = host + '/jsonrpc'
+
+        if self.password:
+            response = request.request_json(url, method="post", data=json.dumps(data), headers=headers, auth=(self.username, self.password))
+        else:
+            response = request.request_json(url, method="post", data=json.dumps(data), headers=headers)
+
+        if response:
+            return response[0]['result']
 
     def update(self):
 
@@ -349,13 +352,15 @@ class Plex(object):
         for host in hosts:
             logger.info('Sending library update command to Plex Media Server@ ' + host)
             url = "%s/library/sections" % host
-            try:
-                xml_sections = minidom.parse(urllib.urlopen(url))
-            except IOError, e:
-                logger.warn("Error while trying to contact Plex Media Server: %s" % e)
-                return False
+            if self.token:
+                params = {'X-Plex-Token': self.token}
+            else:
+                params = False
 
-            sections = xml_sections.getElementsByTagName('Directory')
+            r = request.request_minidom(url, params=params)
+
+            sections = r.getElementsByTagName('Directory')
+
             if not sections:
                 logger.info(u"Plex Media Server not running on: " + host)
                 return False
@@ -363,11 +368,7 @@ class Plex(object):
             for s in sections:
                 if s.getAttribute('type') == "artist":
                     url = "%s/library/sections/%s/refresh" % (host, s.getAttribute('key'))
-                    try:
-                        urllib.urlopen(url)
-                    except Exception as e:
-                        logger.warn("Error updating library section for Plex Media Server: %s" % e)
-                        return False
+                    request.request_response(url, params=params)
 
     def notify(self, artist, album, albumartpath):
 
@@ -378,17 +379,24 @@ class Plex(object):
         time = "3000" # in ms
 
         for host in hosts:
-            logger.info('Sending notification command to Plex Media Server @ ' + host)
+            logger.info('Sending notification command to Plex client @ ' + host)
             try:
-                notification = header + "," + message + "," + time + "," + albumartpath
-                notifycommand = {'command': 'ExecBuiltIn', 'parameter': 'Notification(' + notification + ')'}
-                request = self._sendhttp(host, notifycommand)
+                version = self._sendjson(host, 'Application.GetProperties', {'properties': ['version']})['version']['major']
+
+                if version < 12: #Eden
+                    notification = header + "," + message + "," + time + "," + albumartpath
+                    notifycommand = {'command': 'ExecBuiltIn', 'parameter': 'Notification(' + notification + ')'}
+                    request = self._sendhttp(host, notifycommand)
+
+                else: #Frodo
+                    params = {'title': header, 'message': message, 'displaytime': int(time), 'image': albumartpath}
+                    request = self._sendjson(host, 'GUI.ShowNotification', params)
 
                 if not request:
                     raise Exception
 
-            except:
-                logger.warn('Error sending notification request to Plex Media Server')
+            except Exception:
+                logger.error('Error sending notification request to Plex client @ ' + host)
 
 
 class NMA(object):
@@ -435,52 +443,30 @@ class PUSHBULLET(object):
         self.apikey = headphones.CONFIG.PUSHBULLET_APIKEY
         self.deviceid = headphones.CONFIG.PUSHBULLET_DEVICEID
 
-    def conf(self, options):
-        return cherrypy.config['config'].get('PUSHBULLET', options)
-
-    def notify(self, message, event):
+    def notify(self, message, status):
         if not headphones.CONFIG.PUSHBULLET_ENABLED:
             return
 
-        http_handler = HTTPSConnection("api.pushbullet.com")
+        url = "https://api.pushbullet.com/v2/pushes"
 
         data = {'type': "note",
                 'title': "Headphones",
-                'body': message.encode("utf-8")}
+                'body': message + ': ' + status}
 
-        http_handler.request("POST",
-                                "/v2/pushes",
-                                headers={'Content-type': "application/json",
-                                            'Authorization': 'Basic %s' % base64.b64encode(headphones.CONFIG.PUSHBULLET_APIKEY + ":")},
-                                body=json.dumps(data))
-        response = http_handler.getresponse()
-        request_status = response.status
-        logger.debug(u"PushBullet response status: %r" % request_status)
-        logger.debug(u"PushBullet response headers: %r" % response.getheaders())
-        logger.debug(u"PushBullet response body: %r" % response.read())
+        if self.deviceid:
+            data['device_iden'] = self.deviceid
 
-        if request_status == 200:
-                logger.info(u"PushBullet notifications sent.")
-                return True
-        elif request_status >= 400 and request_status < 500:
-                logger.info(u"PushBullet request failed: %s" % response.reason)
-                return False
+        headers={'Content-type': "application/json",
+                 'Authorization': 'Bearer ' + headphones.CONFIG.PUSHBULLET_APIKEY}
+
+        response = request.request_json(url, method="post", headers=headers, data=json.dumps(data))
+
+        if response:
+            logger.info(u"PushBullet notifications sent.")
+            return True
         else:
-                logger.info(u"PushBullet notification failed serverside.")
-                return False
-
-    def updateLibrary(self):
-        #For uniformity reasons not removed
-        return
-
-    def test(self, apikey, deviceid):
-
-        self.enabled = True
-        self.apikey = apikey
-        self.deviceid = deviceid
-
-        self.notify('Main Screen Activate', 'Test Message')
-
+            logger.info(u"PushBullet notification failed.")
+            return False
 
 class PUSHALOT(object):
 
@@ -578,7 +564,7 @@ class PUSHOVER(object):
         if not headphones.CONFIG.PUSHOVER_ENABLED:
             return
 
-        http_handler = HTTPSConnection("api.pushover.net")
+        url = "https://api.pushover.net/1/messages.json"
 
         data = {'token': self.application_token,
                 'user': headphones.CONFIG.PUSHOVER_KEYS,
@@ -586,25 +572,16 @@ class PUSHOVER(object):
                 'message': message.encode("utf-8"),
                 'priority': headphones.CONFIG.PUSHOVER_PRIORITY}
 
-        http_handler.request("POST",
-                                "/1/messages.json",
-                                headers={'Content-type': "application/x-www-form-urlencoded"},
-                                body=urlencode(data))
-        response = http_handler.getresponse()
-        request_status = response.status
-        logger.debug(u"Pushover response status: %r" % request_status)
-        logger.debug(u"Pushover response headers: %r" % response.getheaders())
-        logger.debug(u"Pushover response body: %r" % response.read())
+        headers = {'Content-type': "application/x-www-form-urlencoded"}
 
-        if request_status == 200:
-                logger.info(u"Pushover notifications sent.")
-                return True
-        elif request_status >= 400 and request_status < 500:
-                logger.info(u"Pushover request failed: %s" % response.reason)
-                return False
+        response = request.request_response(url, method="POST", headers=headers, data=data)
+
+        if response:
+            logger.info(u"Pushover notifications sent.")
+            return True
         else:
-                logger.info(u"Pushover notification failed.")
-                return False
+            logger.error(u"Pushover notification failed.")
+            return False
 
     def updateLibrary(self):
         #For uniformity reasons not removed
@@ -727,23 +704,32 @@ class OSX_NOTIFY(object):
             self.objc = __import__("objc")
             self.AppKit = __import__("AppKit")
         except:
+            logger.warn('OS X Notification: Cannot import objc or AppKit')
             return False
 
     def swizzle(self, cls, SEL, func):
-        old_IMP = cls.instanceMethodForSelector_(SEL)
+        old_IMP = getattr(cls, SEL, None)
+        if old_IMP is None:
+            old_IMP = cls.instanceMethodForSelector_(SEL)
 
         def wrapper(self, *args, **kwargs):
             return func(self, old_IMP, *args, **kwargs)
-        new_IMP = self.objc.selector(wrapper, selector=old_IMP.selector,
-            signature=old_IMP.signature)
-        self.objc.classAddMethod(cls, SEL, new_IMP)
+
+        new_IMP = self.objc.selector(
+            wrapper,
+            selector=old_IMP.selector,
+            signature=old_IMP.signature
+        )
+        self.objc.classAddMethod(cls, SEL.encode(), new_IMP)
 
     def notify(self, title, subtitle=None, text=None, sound=True, image=None):
 
         try:
-            self.swizzle(self.objc.lookUpClass('NSBundle'),
-                b'bundleIdentifier',
-                self.swizzled_bundleIdentifier)
+            self.swizzle(
+                self.objc.lookUpClass('NSBundle'),
+                'bundleIdentifier',
+                self.swizzled_bundleIdentifier
+            )
 
             NSUserNotification = self.objc.lookUpClass('NSUserNotification')
             NSUserNotificationCenter = self.objc.lookUpClass('NSUserNotificationCenter')
@@ -827,3 +813,34 @@ class SubSonicNotifier(object):
         # Invoke request
         request.request_response(self.host + "musicFolderSettings.view?scanNow",
             auth=(self.username, self.password))
+
+class Email(object):
+
+    def notify(self, subject, message):
+
+        message = MIMEText(message, 'plain', "utf-8")
+        message['Subject'] = subject
+        message['From'] = email.utils.formataddr(('Headphones', headphones.CONFIG.EMAIL_FROM))
+        message['To'] = headphones.CONFIG.EMAIL_TO
+
+        try:
+            if (headphones.CONFIG.EMAIL_SSL):
+                mailserver = smtplib.SMTP_SSL(headphones.CONFIG.EMAIL_SMTP_SERVER, headphones.CONFIG.EMAIL_SMTP_PORT)
+            else:
+                mailserver = smtplib.SMTP(headphones.CONFIG.EMAIL_SMTP_SERVER, headphones.CONFIG.EMAIL_SMTP_PORT)
+
+            if (headphones.CONFIG.EMAIL_TLS):
+                mailserver.starttls()
+
+            mailserver.ehlo()
+
+            if headphones.CONFIG.EMAIL_SMTP_USER:
+                mailserver.login(headphones.CONFIG.EMAIL_SMTP_USER, headphones.CONFIG.EMAIL_SMTP_PASSWORD)
+
+            mailserver.sendmail(headphones.CONFIG.EMAIL_FROM, headphones.CONFIG.EMAIL_TO, message.as_string())
+            mailserver.quit()
+            return True
+
+        except Exception, e:
+            logger.warn('Error sending Email: %s' % e)
+            return False

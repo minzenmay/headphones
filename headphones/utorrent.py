@@ -73,6 +73,7 @@ class utorrentclient(object):
         except urllib2.HTTPError as err:
             logger.debug('URL: ' + str(url))
             logger.debug('Error getting Token. uTorrent responded with error: ' + str(err))
+            return
         match = re.search(utorrentclient.TOKEN_REGEX, response.read())
         return match.group(1)
 
@@ -147,6 +148,10 @@ class utorrentclient(object):
         return self._action(params)
 
     def _action(self, params, body=None, content_type=None):
+
+        if not self.token:
+            return
+
         url = self.base_url + '/gui/' + '?token=' + self.token + '&' + urllib.urlencode(params)
         request = urllib2.Request(url)
 
@@ -215,7 +220,7 @@ def dirTorrent(hash, cacheid=None, return_name=None):
     cacheid = torrentList['torrentc']
 
     for torrent in torrents:
-        if torrent[0].upper() == hash:
+        if torrent[0].upper() == hash.upper():
             if not return_name:
                 return torrent[26], cacheid
             else:
@@ -223,8 +228,12 @@ def dirTorrent(hash, cacheid=None, return_name=None):
 
     return None, None
 
+def addTorrent(link):
+    uTorrentClient = utorrentclient()
+    uTorrentClient.add_url(link)
 
-def addTorrent(link, hash):
+
+def getFolder(hash):
     uTorrentClient = utorrentclient()
 
     # Get Active Directory from settings
@@ -233,8 +242,6 @@ def addTorrent(link, hash):
     if not active_dir:
         logger.error('Could not get "Put new downloads in:" directory from uTorrent settings, please ensure it is set')
         return None
-
-    uTorrentClient.add_url(link)
 
     # Get Torrent Folder Name
     torrent_folder, cacheid = dirTorrent(hash)
@@ -249,10 +256,8 @@ def addTorrent(link, hash):
 
     if torrent_folder == active_dir or not torrent_folder:
         torrent_folder, cacheid = dirTorrent(hash, cacheid, return_name=True)
-        labelTorrent(hash)
         return torrent_folder
     else:
-        labelTorrent(hash)
         if headphones.SYS_PLATFORM != "win32":
             torrent_folder = torrent_folder.replace('\\', '/')
         return os.path.basename(os.path.normpath(torrent_folder))

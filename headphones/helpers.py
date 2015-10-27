@@ -149,7 +149,7 @@ def get_age(date):
 
     try:
         days_old = int(split_date[0]) * 365 + int(split_date[1]) * 30 + int(split_date[2])
-    except IndexError:
+    except (IndexError,ValueError):
         days_old = False
 
     return days_old
@@ -173,15 +173,15 @@ def piratesize(size):
     factor = float(split[0])
     unit = split[1].upper()
     
-    if unit == 'MiB':
+    if unit == 'MIB':
         size = factor * 1048576
     elif unit == 'MB':
         size = factor * 1000000
-    elif unit == 'GiB':
+    elif unit == 'GIB':
         size = factor * 1073741824
     elif unit == 'GB':
         size = factor * 1000000000
-    elif unit == 'KiB':
+    elif unit == 'KIB':
         size = factor * 1024
     elif unit == 'KB':
         size = factor * 1000
@@ -519,7 +519,7 @@ def get_downloaded_track_list(albumpath):
     return downloaded_track_list
 
 
-def preserve_torrent_direcory(albumpath):
+def preserve_torrent_directory(albumpath):
     """
     Copy torrent directory to headphones-modified to keep files for seeding.
     """

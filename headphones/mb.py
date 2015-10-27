@@ -47,9 +47,11 @@ def startmb():
     elif headphones.CONFIG.MIRROR == "custom":
         mbhost = headphones.CONFIG.CUSTOMHOST
         mbport = int(headphones.CONFIG.CUSTOMPORT)
+        mbuser = headphones.CONFIG.CUSTOMUSER
+        mbpass = headphones.CONFIG.CUSTOMPASS
         sleepytime = int(headphones.CONFIG.CUSTOMSLEEP)
     elif headphones.CONFIG.MIRROR == "headphones":
-        mbhost = "144.76.94.239"
+        mbhost = "codeshy.com"
         mbport = 8181
         mbuser = headphones.CONFIG.HPUSER
         mbpass = headphones.CONFIG.HPPASS
@@ -69,11 +71,15 @@ def startmb():
         mb_lock.minimum_delta = sleepytime
 
     # Add headphones credentials
-    if headphones.CONFIG.MIRROR == "headphones":
-        if not mbuser and mbpass:
-            logger.warn("No username or password set for VIP server")
+    if headphones.CONFIG.MIRROR == "headphones" or headphones.CONFIG.CUSTOMAUTH:
+        if not mbuser or not mbpass:
+            logger.warn("No username or password set for MusicBrainz server")
         else:
             musicbrainzngs.hpauth(mbuser, mbpass)
+
+    # Let us know if we disable custom authentication
+    if not headphones.CONFIG.CUSTOMAUTH and headphones.CONFIG.MIRROR == "custom":
+        musicbrainzngs.disable_hpauth()
 
     logger.debug('Using the following server values: MBHost: %s, MBPort: %i, Sleep Interval: %i', mbhost, mbport, sleepytime)
 
@@ -128,7 +134,6 @@ def findArtist(name, limit=1):
                      'score': int(result['ext:score'])
                      })
      return artistlist
-
 
 def findRelease(name, limit=1, artist=None):
     releaselist = []
@@ -207,12 +212,45 @@ def findRelease(name, limit=1, artist=None):
                     })
     return releaselist
 
+def findSeries(name, limit=1):
+     serieslist = []
+     seriesResults = None
+
+     chars = set('!?*-')
+     if any((c in chars) for c in name):
+         name = '"' + name + '"'
+
+     criteria = {'series': name.lower()}
+
+     with mb_lock:
+         try:
+             seriesResults = musicbrainzngs.search_series(limit=limit, **criteria)['series-list']
+         except musicbrainzngs.WebServiceError as e:
+             logger.warn('Attempt to query MusicBrainz for %s failed (%s)' % (name, str(e)))
+             mb_lock.snooze(5)
+
+     if not seriesResults:
+         return False
+     for result in seriesResults:
+         if 'disambiguation' in result:
+             uniquename = unicode(result['name'] + " (" + result['disambiguation'] + ")")
+         else:
+             uniquename = unicode(result['name'])
+         serieslist.append({
+                     'uniquename': uniquename,
+                     'name': unicode(result['name']),
+                     'type': unicode(result['type']),
+                     'id': unicode(result['id']),
+                     'url': unicode("http://musicbrainz.org/series/" + result['id']),#probably needs to be changed
+                     'score': int(result['ext:score'])
+                     })
+     return serieslist
 
 def getArtist(artistid, extrasonly=False):
     artist_dict = {}
     artist = None
     try:
-        limit = 200
+        limit = 100
         with mb_lock:
             artist = musicbrainzngs.get_artist_by_id(artistid)['artist']
         newRgs = None
@@ -282,7 +320,7 @@ def getArtist(artistid, extrasonly=False):
             mb_extras_list = []
 
             try:
-                limit = 200
+                limit = 100
                 newRgs = None
                 while newRgs is None or len(newRgs) >= limit:
                     with mb_lock:
@@ -310,6 +348,38 @@ def getArtist(artistid, extrasonly=False):
     artist_dict['releasegroups'] = releasegroups
     return artist_dict
 
+def getSeries(seriesid):
+    series_dict = {}
+    series = None
+    try:
+        with mb_lock:
+            series = musicbrainzngs.get_series_by_id(seriesid,includes=['release-group-rels'])['series']
+    except musicbrainzngs.WebServiceError as e:
+        logger.warn('Attempt to retrieve series information from MusicBrainz failed for seriesid: %s (%s)' % (seriesid, str(e)))
+        mb_lock.snooze(5)
+    except Exception as e:
+        pass
+
+    if not series:
+        return False
+
+    if 'disambiguation' in series:
+        series_dict['artist_name'] = unicode(series['name'] + " (" + unicode(series['disambiguation']) + ")")
+    else:
+        series_dict['artist_name'] = unicode(series['name'])
+
+    releasegroups = []
+
+    for rg in series['release_group-relation-list']:
+        releasegroup = rg['release-group']
+        releasegroups.append({
+            'title':releasegroup['title'],
+            'date':releasegroup['first-release-date'],
+            'id':releasegroup['id'],
+            'type':rg['type']
+            })
+    series_dict['releasegroups'] = releasegroups
+    return series_dict
 
 def getReleaseGroup(rgid):
     """
@@ -396,6 +466,11 @@ def get_new_releases(rgid, includeExtras=False, forcefull=False):
 
     myDB = db.DBConnection()
     results = []
+
+    release_status = "official"
+    if includeExtras and not headphones.CONFIG.OFFICIAL_RELEASES_ONLY:
+        release_status = []
+
     try:
         limit = 100
         newResults = None
@@ -404,6 +479,7 @@ def get_new_releases(rgid, includeExtras=False, forcefull=False):
                 newResults = musicbrainzngs.browse_releases(
                     release_group=rgid,
                     includes=['artist-credits', 'labels', 'recordings', 'release-groups', 'media'],
+                    release_status = release_status,
                     limit=limit,
                     offset=len(results))
             if 'release-list' not in newResults:
@@ -443,10 +519,6 @@ def get_new_releases(rgid, includeExtras=False, forcefull=False):
     num_new_releases = 0
 
     for releasedata in results:
-        #releasedata.get will return None if it doesn't have a status
-        #all official releases should have the Official status included
-        if not includeExtras and releasedata.get('status') != 'Official':
-            continue
 
         release = {}
         rel_id_check = releasedata['id']

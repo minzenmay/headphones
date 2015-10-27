@@ -23,6 +23,7 @@ import itertools
 import headphones
 
 from beets import autotag
+from beets import config as beetsconfig
 from beets.mediafile import MediaFile, FileTypeError, UnreadableFileError
 from beetsplug import lyrics as beetslyrics
 
@@ -34,7 +35,7 @@ postprocessor_lock = threading.Lock()
 
 
 def checkFolder():
-    logger.info("Checking download folder for completed downloads (only snatched ones).")
+    logger.debug("Checking download folder for completed downloads (only snatched ones).")
 
     with postprocessor_lock:
         myDB = db.DBConnection()
@@ -48,7 +49,7 @@ def checkFolder():
                     download_dir = headphones.CONFIG.DOWNLOAD_TORRENT_DIR
 
                 album_path = os.path.join(download_dir, album['FolderName']).encode(headphones.SYS_ENCODING, 'replace')
-                logger.info("Checking if %s exists" % album_path)
+                logger.debug("Checking if %s exists" % album_path)
 
                 if os.path.exists(album_path):
                     logger.info('Found "' + album['FolderName'] + '" in ' + album['Kind'] + ' download folder. Verifying....')
@@ -56,9 +57,9 @@ def checkFolder():
             else:
                 logger.info("No folder name found for " + album['Title'])
 
-    logger.info("Checking download folder finished.")
+    logger.debug("Checking download folder finished.")
 
-def verify(albumid, albumpath, Kind=None, forced=False):
+def verify(albumid, albumpath, Kind=None, forced=False, keep_original_folder=False):
 
     myDB = db.DBConnection()
     release = myDB.action('SELECT * from albums WHERE AlbumID=?', [albumid]).fetchone()
@@ -187,15 +188,9 @@ def verify(albumid, albumpath, Kind=None, forced=False):
     # Split cue
     if headphones.CONFIG.CUE_SPLIT and downloaded_cuecount and downloaded_cuecount >= len(downloaded_track_list):
         if headphones.CONFIG.KEEP_TORRENT_FILES and Kind == "torrent":
-            albumpath = helpers.preserve_torrent_direcory(albumpath)
+            albumpath = helpers.preserve_torrent_directory(albumpath)
         if albumpath and helpers.cue_split(albumpath):
             downloaded_track_list = helpers.get_downloaded_track_list(albumpath)
-        else:
-            myDB.action('UPDATE snatched SET status = "Unprocessed" WHERE status NOT LIKE "Seed%" and AlbumID=?', [albumid])
-            processed = re.search(r' \(Unprocessed\)(?:\[\d+\])?', albumpath)
-            if not processed:
-                renameUnprocessedFolder(albumpath, tag="Unprocessed")
-            return
 
     # test #1: metadata - usually works
     logger.debug('Verifying metadata...')
@@ -221,7 +216,7 @@ def verify(albumid, albumpath, Kind=None, forced=False):
         logger.debug('Matching metadata album: %s with album name: %s' % (metaalbum, dbalbum))
 
         if metaartist == dbartist and metaalbum == dbalbum:
-            doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list, Kind)
+            doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list, Kind, keep_original_folder)
             return
 
     # test #2: filenames
@@ -239,7 +234,7 @@ def verify(albumid, albumpath, Kind=None, forced=False):
             logger.debug('Checking if track title: %s is in file name: %s' % (dbtrack, filetrack))
 
             if dbtrack in filetrack:
-                doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list, Kind)
+                doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list, Kind, keep_original_folder)
                 return
 
     # test #3: number of songs and duration
@@ -271,7 +266,7 @@ def verify(albumid, albumpath, Kind=None, forced=False):
             logger.debug('Database track duration: %i' % db_track_duration)
             delta = abs(downloaded_track_duration - db_track_duration)
             if delta < 240:
-                doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list, Kind)
+                doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list, Kind, keep_original_folder)
                 return
 
     logger.warn(u'Could not identify album: %s. It may not be the intended album.' % albumpath.decode(headphones.SYS_ENCODING, 'replace'))
@@ -281,11 +276,11 @@ def verify(albumid, albumpath, Kind=None, forced=False):
         renameUnprocessedFolder(albumpath, tag="Unprocessed")
 
 
-def doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list, Kind=None):
+def doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list, Kind=None, keep_original_folder=False):
 
     logger.info('Starting post-processing for: %s - %s' % (release['ArtistName'], release['AlbumTitle']))
     # Check to see if we're preserving the torrent dir
-    if headphones.CONFIG.KEEP_TORRENT_FILES and Kind == "torrent" and 'headphones-modified' not in albumpath:
+    if (headphones.CONFIG.KEEP_TORRENT_FILES and Kind == "torrent" and 'headphones-modified' not in albumpath) or headphones.CONFIG.KEEP_ORIGINAL_FOLDER or keep_original_folder:
         new_folder = os.path.join(albumpath, 'headphones-modified'.encode(headphones.SYS_ENCODING, 'replace'))
         logger.info("Copying files to 'headphones-modified' subfolder to preserve downloaded files for seeding")
         try:
@@ -306,7 +301,7 @@ def doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list,
                 if any(files.lower().endswith('.' + x.lower()) for x in headphones.MEDIA_FORMATS):
                     downloaded_track_list.append(os.path.join(r, files))
 
-    # Check if files are valid media files and are writeable, before the steps
+    # Check if files are valid media files and are writable, before the steps
     # below are executed. This simplifies errors and prevents unfinished steps.
     for downloaded_track in downloaded_track_list:
         try:
@@ -336,7 +331,7 @@ def doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list,
                     fp.seek(0)
             except IOError as e:
                 logger.debug("Write check exact error: %s", e)
-                logger.error("Track file is not writeable. This is required " \
+                logger.error("Track file is not writable. This is required " \
                     "for some post processing steps: %s. Not continuing.",
                     downloaded_track.decode(headphones.SYS_ENCODING, "replace"))
                 return
@@ -377,7 +372,9 @@ def doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list,
         addAlbumArt(artwork, albumpath, release)
 
     if headphones.CONFIG.CORRECT_METADATA:
-        correctMetadata(albumid, release, downloaded_track_list)
+        correctedMetadata = correctMetadata(albumid, release, downloaded_track_list)
+        if not correctedMetadata and headphones.CONFIG.DO_NOT_PROCESS_UNMATCHED:
+            return
 
     if headphones.CONFIG.EMBED_LYRICS:
         embedLyrics(downloaded_track_list)
@@ -480,7 +477,7 @@ def doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list,
     if headphones.CONFIG.PUSHBULLET_ENABLED:
         logger.info(u"PushBullet request")
         pushbullet = notifiers.PUSHBULLET()
-        pushbullet.notify(pushmessage, "Download and Postprocessing completed")
+        pushbullet.notify(pushmessage, statusmessage)
 
     if headphones.CONFIG.TWITTER_ENABLED:
         logger.info(u"Sending Twitter notification")
@@ -512,6 +509,12 @@ def doPostProcessing(albumid, albumpath, release, tracks, downloaded_track_list,
     if headphones.CONFIG.MPC_ENABLED:
         mpc = notifiers.MPC()
         mpc.notify()
+
+    if headphones.CONFIG.EMAIL_ENABLED:
+        logger.info(u"Sending Email notification")
+        email = notifiers.Email()
+        subject = release['ArtistName'] + ' - ' + release['AlbumTitle']
+        email.notify(subject, "Download and Postprocessing completed")
 
 
 def embedAlbumArt(artwork, downloaded_track_list):
@@ -593,7 +596,6 @@ def renameNFO(albumpath):
                     os.rename(os.path.join(r, file), new_file_name)
                 except Exception as e:
                     logger.error(u'Could not rename file: %s. Error: %s' % (os.path.join(r, file).decode(headphones.SYS_ENCODING, 'replace'), e))
-
 
 def moveFiles(albumpath, release, tracks):
     logger.info("Moving files: %s" % albumpath)
@@ -857,16 +859,16 @@ def correctMetadata(albumid, release, downloaded_track_list):
             cur_artist, cur_album, candidates, rec = autotag.tag_album(items, search_artist=helpers.latinToAscii(release['ArtistName']), search_album=helpers.latinToAscii(release['AlbumTitle']))
         except Exception as e:
             logger.error('Error getting recommendation: %s. Not writing metadata', e)
-            return
-        if str(rec) == 'recommendation.none':
+            return False
+        if str(rec) == 'Recommendation.none':
             logger.warn('No accurate album match found for %s, %s -  not writing metadata', release['ArtistName'], release['AlbumTitle'])
-            return
+            return False
 
         if candidates:
             dist, info, mapping, extra_items, extra_tracks = candidates[0]
         else:
             logger.warn('No accurate album match found for %s, %s -  not writing metadata', release['ArtistName'], release['AlbumTitle'])
-            return
+            return False
 
         logger.info('Beets recommendation for tagging items: %s' % rec)
 
@@ -874,13 +876,23 @@ def correctMetadata(albumid, release, downloaded_track_list):
 
         autotag.apply_metadata(info, mapping)
 
+        # Set ID3 tag version
+        if headphones.CONFIG.IDTAG:
+            beetsconfig['id3v23'] = True
+            logger.debug("Using ID3v2.3")
+        else:
+            beetsconfig['id3v23'] = False
+            logger.debug("Using ID3v2.4")
+
         for item in items:
             try:
                 item.write()
                 logger.info("Successfully applied metadata to: %s", item.path.decode(headphones.SYS_ENCODING, 'replace'))
             except Exception as e:
                 logger.warn("Error writing metadata to '%s': %s", item.path.decode(headphones.SYS_ENCODING, 'replace'), str(e))
+                return False
 
+        return True
 
 def embedLyrics(downloaded_track_list):
     logger.info('Adding lyrics')
@@ -1051,7 +1063,9 @@ def renameUnprocessedFolder(path, tag):
             return
 
 
-def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None):
+def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None, keep_original_folder=False):
+
+    logger.info('Force checking download folder for completed downloads')
 
     ignored = 0
 
@@ -1125,7 +1139,7 @@ def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None):
                 continue
             else:
                 logger.info('Found a match in the database: %s. Verifying to make sure it is the correct album', snatched['Title'])
-                verify(snatched['AlbumID'], folder, snatched['Kind'])
+                verify(snatched['AlbumID'], folder, snatched['Kind'], keep_original_folder=keep_original_folder)
                 continue
 
         # Attempt 2: strip release group id from filename
@@ -1142,10 +1156,10 @@ def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None):
             release = myDB.action('SELECT ArtistName, AlbumTitle, AlbumID from albums WHERE AlbumID=?', [rgid]).fetchone()
             if release:
                 logger.info('Found a match in the database: %s - %s. Verifying to make sure it is the correct album', release['ArtistName'], release['AlbumTitle'])
-                verify(release['AlbumID'], folder, forced=True)
+                verify(release['AlbumID'], folder, forced=True, keep_original_folder=keep_original_folder)
                 continue
             else:
-                logger.info('Found a (possibly) valid Musicbrainz realse group id in album folder name.')
+                logger.info('Found a (possibly) valid Musicbrainz release group id in album folder name.')
                 verify(rgid, folder, forced=True)
                 continue
 
@@ -1161,7 +1175,7 @@ def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None):
             release = myDB.action('SELECT AlbumID, ArtistName, AlbumTitle from albums WHERE ArtistName LIKE ? and AlbumTitle LIKE ?', [name, album]).fetchone()
             if release:
                 logger.info('Found a match in the database: %s - %s. Verifying to make sure it is the correct album', release['ArtistName'], release['AlbumTitle'])
-                verify(release['AlbumID'], folder)
+                verify(release['AlbumID'], folder, keep_original_folder=keep_original_folder)
                 continue
             else:
                 logger.info('Querying MusicBrainz for the release group id for: %s - %s', name, album)
@@ -1172,7 +1186,7 @@ def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None):
                     rgid = None
 
                 if rgid:
-                    verify(rgid, folder)
+                    verify(rgid, folder, keep_original_folder=keep_original_folder)
                     continue
                 else:
                     logger.info('No match found on MusicBrainz for: %s - %s', name, album)
@@ -1196,7 +1210,7 @@ def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None):
             release = myDB.action('SELECT AlbumID, ArtistName, AlbumTitle from albums WHERE ArtistName LIKE ? and AlbumTitle LIKE ?', [name, album]).fetchone()
             if release:
                 logger.info('Found a match in the database: %s - %s. Verifying to make sure it is the correct album', release['ArtistName'], release['AlbumTitle'])
-                verify(release['AlbumID'], folder)
+                verify(release['AlbumID'], folder, keep_original_folder=keep_original_folder)
                 continue
             else:
                 logger.info('Querying MusicBrainz for the release group id for: %s - %s', name, album)
@@ -1207,7 +1221,7 @@ def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None):
                     rgid = None
 
                 if rgid:
-                    verify(rgid, folder)
+                    verify(rgid, folder, keep_original_folder=keep_original_folder)
                     continue
                 else:
                     logger.info('No match found on MusicBrainz for: %s - %s', name, album)
@@ -1220,7 +1234,7 @@ def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None):
             release = myDB.action('SELECT AlbumID, ArtistName, AlbumTitle from albums WHERE AlbumTitle LIKE ?', [folder_basename]).fetchone()
             if release:
                 logger.info('Found a match in the database: %s - %s. Verifying to make sure it is the correct album', release['ArtistName'], release['AlbumTitle'])
-                verify(release['AlbumID'], folder)
+                verify(release['AlbumID'], folder, keep_original_folder=keep_original_folder)
                 continue
             else:
                 logger.info('Querying MusicBrainz for the release group id for: %s', folder_basename)
@@ -1231,7 +1245,7 @@ def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None):
                     rgid = None
 
                 if rgid:
-                    verify(rgid, folder)
+                    verify(rgid, folder, keep_original_folder=keep_original_folder)
                     continue
                 else:
                     logger.info('No match found on MusicBrainz for: %s - %s', name, album)

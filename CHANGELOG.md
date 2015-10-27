@@ -1,5 +1,91 @@
 # Changelog
 
+## v0.5.9
+Released 05 September 2015
+
+Highlights:
+* Added: Providers Strike, Jackett, custom Torznabs
+* Added: Option to stop post-processing if no good match found (#2343)
+* Fixed: Blackhole -> Magnet, limit to torcache
+* Fixed: Kat 403 flac error
+* Fixed: Last.fm errors
+* Fixed: Pushover notifications
+* Improved: Rutracker logging, switched to requests lib
+
+The full list of commits can be found [here](https://github.com/rembo10/headphones/compare/v0.5.6...v0.5.7).
+
+## v0.5.8
+Released 13 July 2015
+
+Highlights:
+* Added: Option to only include official extras
+* Added: Option to wait until album release date before searching
+* Fixed: NotifyMyAndroid notifications
+* Fixed: Plex Notifications
+* Fixed: Metacritic parsing
+* Fixed: Pushbullet notifications
+* Fixed: What.cd not honoring custom search term (#2279)
+* Improved: XSS Search bug
+* Improved: Config page layout
+* Improved: Set localhost as default
+* Improved: Better single artist scanning
+
+The full list of commits can be found [here](https://github.com/rembo10/headphones/compare/v0.5.6...v0.5.7).
+
+## v0.5.7
+Released 01 July 2015
+
+Highlights:
+* Improved: Moved pushover to use requests lib
+* Improved: Plex tokens with Plex Home
+* Improved: Added getLogs & clearLogs to api
+* Improved: Cache MetaCritic scores. Added user-agent header to fix 403 errors
+* Improved: Specify whether to delete folders when force post-processing
+* Improved: Convert target bitrate to vbr preset for what.cd searching
+* Improved: Switched Pushover to requests lib
+
+The full list of commits can be found [here](https://github.com/rembo10/headphones/compare/v0.5.6...v0.5.7).
+
+## v0.5.6
+Released 08 June 2015
+
+Highlights:
+* Added: Metacritic scores
+* Added: Series support (e.g. Cafe Del Mar, Now That's What I Call Music, etc)
+* Added: Filter out clean/edited/censored releases (#2198)
+* Added: Button on the log page to toggle verbose/debug logging
+* Fixed: Connecting to SABnzbd over https with python >= 2.7.9
+* Fixed: Email Notifications with SSL
+* Fixed: Don't limit musicbrainz results to first 100
+* Fixed: nzbget url fix
+* Fixed: OSX Notifications
+* Improved: Cuesplit, allow wav, ape to be split
+* Improved: Moved the 'freeze db' option to the advanced->misc. tab
+* Improved: Moved kickass searching to json api, so it doesn't throw 404 errors anymore when there are no results
+* Improved: SSL for headphones indexer
+* Improved: Disable update dialog box if check_github is diabled
+
+The full list of commits can be found [here](https://github.com/rembo10/headphones/compare/v0.5.5...v0.5.6).
+
+## v0.5.5
+Released 04 May 2015
+
+Highlights:
+* Added: force ID3v2.3 during post processing (#2121)
+* Added: MusicBrainz authentication (#2125)
+* Added: Email notifications (addresses #1045)
+* Fixed: Kickass url updated to kickass.to (#2119)
+* Fixed: Piratebay returning 0 bytes for all files
+* Fixed: Albums stopped automatically refreshing when adding an artist
+* Fixed: Min/max sizes for target bitrate
+* Fixed: Don't filter any results if looking for a specific download
+* Fixed: Sort by size in the specific download table
+* Fixed: Deal with beets recommendation.none correctly
+* Improved: Close dialog window automatically when choosing a specific download
+* Improved: Move some repetitive log messages to debug level
+
+The full list of commits can be found [here](https://github.com/rembo10/headphones/compare/v0.5.4...v0.5.5).
+
 ## v0.5.4
 Released 05 February 2015
 

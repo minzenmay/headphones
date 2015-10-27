@@ -95,7 +95,7 @@ def request_response(url, method="get", auto_raise=True,
             "host is up and running.")
     except requests.Timeout:
         logger.error(
-            "Request timed out. The remote host did not respond timely.")
+            "Request timed out. The remote host did not respond in a timely manner.")
     except requests.HTTPError as e:
         if e.response is not None:
             if e.response.status_code >= 500:
@@ -206,7 +206,7 @@ def server_message(response):
     message = None
 
     # First attempt is to 'read' the response as HTML
-    if "text/html" in response.headers.get("content-type"):
+    if response.headers.get("content-type") and "text/html" in response.headers.get("content-type"):
         try:
             soup = BeautifulSoup(response.content, "html5lib")
         except Exception:
